@@ -8,7 +8,7 @@
 ## 🚀 Быстрый запуск (через Docker)
 
 ```bash
-git clone https://github.com/<your-username>/windi-chat.git
+git clone https://github.com/zakat404/Messenger-.git
 cd windi-chat
 docker-compose up --build
 FastAPI Docs: http://localhost:8000/docs
