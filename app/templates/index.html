@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>WinDI Chat Frontend</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .container { border: 1px solid #aaa; padding: 10px; margin: 10px; width: 400px; }
+    .wide-container { width: 800px; }
+    #messages { width: 100%; height: 300px; }
+  </style>
+</head>
+<body>
+  <h1>WinDI Chat Frontend</h1>
+
+  <div class="container">
+    <h2>Регистрация</h2>
+    <form id="registerForm">
+      <label for="regName">Имя:</label>
+      <input type="text" id="regName" required><br><br>
+      <label for="regEmail">Email:</label>
+      <input type="email" id="regEmail" required><br><br>
+      <label for="regPassword">Пароль:</label>
+      <input type="password" id="regPassword" required><br><br>
+      <button type="submit">Зарегистрироваться</button>
+    </form>
+    <div id="registerResult"></div>
+  </div>
+
+  <hr>
+
+  <div class="container">
+    <h2>Логин</h2>
+    <form id="loginForm">
+      <label for="loginEmail">Email:</label>
+      <input type="email" id="loginEmail" required><br><br>
+      <label for="loginPassword">Пароль:</label>
+      <input type="password" id="loginPassword" required><br><br>
+      <button type="submit">Войти</button>
+    </form>
+    <div id="loginResult"></div>
+  </div>
+
+  <hr>
+
+  <div class="container">
+    <h2>Получить информацию о пользователе</h2>
+    <button id="getMeBtn">GET /auth/me</button>
+    <div id="meResult"></div>
+  </div>
+
+  <hr>
+
+  <div class="container wide-container">
+    <h2>Чат (WebSocket)</h2>
+    <button id="connectWsBtn">Подключиться к WebSocket</button>
+    <p><small id="wsUrlDisplay"></small></p>
+    <br>
+    <label for="chatIdInput">Chat ID:</label>
+    <input type="number" id="chatIdInput" value="1"><br><br>
+    <label for="msgInput">Сообщение:</label>
+    <input type="text" id="msgInput" placeholder="Введите сообщение">
+    <button id="sendMsgBtn">Отправить</button>
+    <br><br>
+    <button id="loadHistoryBtn">Загрузить историю</button>
+    <br><br>
+    <textarea id="messages" readonly placeholder="Сообщения..."></textarea>
+  </div>
+
+  <script>
+    const BASE_URL = "http://0.0.0.0:8000";
+    let accessToken = "";
+    let currentUserId = "";
+    let ws = null;
+
+    document.getElementById("registerForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = document.getElementById("regName").value;
+      const email = document.getElementById("regEmail").value;
+      const password = document.getElementById("regPassword").value;
+      try {
+        const response = await fetch(`${BASE_URL}/auth/register`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, email, password })
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Ошибка регистрации: ${errText}`);
+        }
+        const data = await response.json();
+        document.getElementById("registerResult").innerText = "Регистрация успешна!";
+      } catch (error) {
+        console.error(error);
+        alert(error.message);
+      }
+    });
+
+    document.getElementById("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = document.getElementById("loginEmail").value;
+      const password = document.getElementById("loginPassword").value;
+      try {
+        const params = new URLSearchParams();
+        params.append("username", email);
+        params.append("password", password);
+        const response = await fetch(`${BASE_URL}/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: params.toString()
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Ошибка логина: ${errText}`);
+        }
+        const data = await response.json();
+        accessToken = data.access_token;
+        document.getElementById("loginResult").innerText = "Успешный логин! Токен получен.";
+      } catch (error) {
+        console.error(error);
+        alert(error.message);
+      }
+    });
+
+    document.getElementById("getMeBtn").addEventListener("click", async () => {
+      if (!accessToken) {
+        alert("Сначала войдите, чтобы получить токен.");
+        return;
+      }
+      try {
+        const response = await fetch(`${BASE_URL}/auth/me`, {
+          method: "GET",
+          headers: { "Authorization": `Bearer ${accessToken}` }
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Ошибка получения информации: ${errText}`);
+        }
+        const data = await response.json();
+        currentUserId = data.id;
+        document.getElementById("meResult").innerText = JSON.stringify(data, null, 2);
+      } catch (error) {
+        console.error(error);
+        alert(error.message);
+      }
+    });
+
+    document.getElementById("connectWsBtn").addEventListener("click", () => {
+      if (!accessToken || !currentUserId) {
+        alert("Сначала выполните логин и получите информацию о пользователе.");
+        return;
+      }
+      const wsUrl = BASE_URL.replace("http", "ws") + `/ws/chat?user_id=${currentUserId}`;
+      document.getElementById("wsUrlDisplay").innerText = wsUrl;
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        appendMessage("WebSocket: Подключено");
+      };
+
+      ws.onmessage = (event) => {
+        console.log("Получено сообщение:", event.data);
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "read_receipt") {
+            updateMessageReadStatus(data.message_id, data.is_read);
+          } else {
+            const line = `User #${data.sender_id}: ${data.text} (chat: ${data.chat_id}, msg_id: ${data.id}, is_read: ${data.is_read})`;
+            appendMessage(line);
+            if (data.sender_id !== currentUserId) {
+              markMessageAsRead(data.id);
+            }
+          }
+        } catch (e) {
+          console.error("Ошибка при разборе сообщения:", e);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error("WebSocket ошибка:", error);
+        appendMessage("WebSocket: Ошибка");
+      };
+
+      ws.onclose = () => {
+        appendMessage("WebSocket: Отключено");
+      };
+    });
+
+    document.getElementById("sendMsgBtn").addEventListener("click", () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert("WebSocket не подключен");
+        return;
+      }
+      const chatId = parseInt(document.getElementById("chatIdInput").value);
+      const text = document.getElementById("msgInput").value;
+      const client_message_id = "unique-" + Date.now();
+      const payload = {
+        chat_id: chatId,
+        text: text,
+        client_message_id: client_message_id
+      };
+      console.log("Sending:", JSON.stringify(payload));
+      ws.send(JSON.stringify(payload));
+      document.getElementById("msgInput").value = "";
+    });
+
+    document.getElementById("loadHistoryBtn").addEventListener("click", async () => {
+      const chatId = parseInt(document.getElementById("chatIdInput").value);
+      if (!accessToken) {
+        alert("Сначала выполните логин!");
+        return;
+      }
+      try {
+        const response = await fetch(`${BASE_URL}/messages/history/${chatId}`, {
+          method: "GET",
+          headers: { "Authorization": `Bearer ${accessToken}` }
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Ошибка загрузки истории: ${errText}`);
+        }
+        const messages = await response.json();
+        const messagesArea = document.getElementById("messages");
+        messagesArea.value = "";
+        messages.forEach(msg => {
+          messagesArea.value += `User #${msg.sender_id}: ${msg.text} (msg_id: ${msg.id}, is_read: ${msg.is_read})\n`;
+        });
+      } catch (error) {
+        console.error(error);
+        alert(error.message);
+      }
+    });
+
+    function appendMessage(text) {
+      const messagesArea = document.getElementById("messages");
+      messagesArea.value += text + "\n";
+      messagesArea.scrollTop = messagesArea.scrollHeight;
+    }
+
+    function updateMessageReadStatus(messageId, isRead) {
+
+      appendMessage(`Сообщение ${messageId} отмечено как прочитанное.`);
+    }
+
+    async function markMessageAsRead(msgId) {
+      try {
+        const response = await fetch(`${BASE_URL}/messages/${msgId}/read`, {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${accessToken}` }
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Ошибка при отметке прочтения: ${errText}`);
+        }
+        const result = await response.json();
+        console.log("markMessageAsRead result:", result);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+  </script>
+</body>
+</html>
